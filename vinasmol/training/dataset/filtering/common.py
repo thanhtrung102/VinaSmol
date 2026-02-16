@@ -70,7 +70,9 @@ class DomainWhitelistMixin(BaseFilter):
         ):
         super().__init__(*args, **kwargs)
         self.domain_whitelist = domain_whitelist or []
-        # TODO: allow domain suffix wildcard
+        # Separate exact matches from suffix wildcards (e.g. "*.gov.vn")
+        self._exact_domains = [d for d in self.domain_whitelist if not d.startswith("*.")]
+        self._suffix_patterns = [d[1:] for d in self.domain_whitelist if d.startswith("*.")]
         self.allow_no_url = allow_no_url
 
         if not hasattr(self, 'tldextractor'):
@@ -85,7 +87,11 @@ class DomainWhitelistMixin(BaseFilter):
             raise ValueError("Missing document 'url' field")
 
         url_info = self.tldextractor(url)
-        if url_info.top_domain_under_public_suffix in self.domain_whitelist:
+        domain = url_info.top_domain_under_public_suffix
+        if domain in self._exact_domains:
+            return True
+        fqdn = url_info.fqdn
+        if any(fqdn.endswith(suffix) for suffix in self._suffix_patterns):
             return True
 
         return super().filter(document)

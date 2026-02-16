@@ -275,8 +275,8 @@ class ESComputeRangesExternal(PipelineStep):
                 raise e
 
         # Cleaning up manually because the previous script fails
-        temp_big_sequences = glob.glob("out.table.bin.*", root_dir=self.tmp_dir.name)
-        #for file in temp_big_sequences:
+        _temp_big_sequences = glob.glob("out.table.bin.*", root_dir=self.tmp_dir.name)
+        #for file in _temp_big_sequences:
         #    Path(file).unlink(missing_ok=True)
         
         try:
@@ -315,18 +315,18 @@ class ESComputeRangesExternal(PipelineStep):
             logger.critical("self-similar failed\n{}", e.stderr.decode())
             raise e
         
-        temp_es_sequences = glob.glob(
+        _temp_es_sequences = glob.glob(
             f"*.{EH.stage_1_sequence}*",
             root_dir=self.data_folder.path,
         )
-        temp_big_sequences = glob.glob(
+        _temp_big_sequences = glob.glob(
             f"dataset{EH.stage_2_big_sequence}.*",
             root_dir=self.data_folder.path,
         )
         self.data_folder.move(f"00000{EH.stage_1_sequence}", f"dataset{EH.stage_1_sequence}")
         self.data_folder.move(f"00000{EH.stage_1_sequence_size}", f"dataset{EH.stage_1_sequence_size}")
 
-        #for file in temp_es_sequences + temp_big_sequences:
+        #for file in _temp_es_sequences + _temp_big_sequences:
         #    Path(file).unlink(missing_ok=True)
 
         #self.tmp_dir.cleanup()

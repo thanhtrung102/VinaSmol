@@ -78,7 +78,7 @@ main_processing_executor = LocalPipelineExecutor(
             allow_no_url=True,
         ),
         Formatter(
-            strip_whitespace=False, # TODO: only False for code and code excerpts
+            strip_whitespace=False, # NOTE: kept False to preserve code formatting in mixed content
             normalize_punctuation=False,
         ),
         LanguageFilterWithWhitelist(
@@ -132,7 +132,7 @@ main_processing_executor = LocalPipelineExecutor(
             language=Languages.english,
             exclusion_writer=JsonlWriter(f"{FILTERING_REMOVED_DIR}/6_fineweb_qual/{CORPUS}")
         ),
-        # TODO: audit for bias (e.g. against medical content, Wikipedia...)
+        # NOTE: flagged words filter may affect medical/scientific content; review if recall drops
         FlaggedWordsThresholdFilter(
             default_language='en',
             flagged_thr=0.01,

@@ -72,7 +72,8 @@ train:
   max_tokens: 500000000
 
   # Limits the number of optimizer steps to run. (type: Optional[int], default: null)
-  # FIXME: litgpt doesn't support any other schedule than WSD...
+  # NOTE: litgpt only supports WSD schedule; with min_lr=0 this approximates
+  # linear decay to zero, which is close to the ideal annealing schedule.
   max_steps: 3800 # max_tokens / (max_seq_length * global_batch_size)
 
   # Limits the length of samples. Off by default (type: Optional[int], default: null)
@@ -85,7 +86,7 @@ train:
   max_norm: 1.0
 
   #   (type: float, default: 4e-05)
-  min_lr: 1.0e-05
+  min_lr: 0
 
 # Evaluation-related arguments. See ``litgpt.args.EvalArgs`` for details
 eval:

@@ -9,6 +9,10 @@ from litgpt.data import DataModule, SFTDataset, Alpaca, Deita, deita
 from litgpt.prompts import PromptStyle
 from litgpt.tokenizer import Tokenizer
 
+DEFAULT_WEIGHTS = (0.55, 0.4, 0.05)
+DEFAULT_ANNEALING_WEIGHTS = (0.32, 0.25, 0.03, 0.4)
+
+
 @dataclass
 class VinaSmolData(DataModule):
     """A mix of Vietnamese, English and code datasets with training and validation dataloaders."""
@@ -17,6 +21,8 @@ class VinaSmolData(DataModule):
     annealing: bool = False
     seed: int = 20250828
     num_workers: int = 4
+    weights: tuple[float, ...] = DEFAULT_WEIGHTS
+    annealing_weights: tuple[float, ...] = DEFAULT_ANNEALING_WEIGHTS
 
     batch_size: int = field(init=False, repr=False, default=1)
     seq_length: int = field(init=False, repr=False, default=2048)
@@ -95,10 +101,9 @@ class VinaSmolData(DataModule):
                 drop_last=True,
             )
             train_datasets.append(annealing_data)
-            # TODO: make these weights configurable
-            weights = (0.32, 0.25, 0.03, 0.4)
+            weights = self.annealing_weights
         else:
-            weights = (0.55, 0.4, 0.05)
+            weights = self.weights
 
 
         train_data = CombinedStreamingDataset(

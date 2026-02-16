@@ -8,7 +8,6 @@ from typing_extensions import Annotated
 from datasets import Dataset, load_dataset
 from loguru import logger
 import numpy as np
-from tokenizers.models import BPE
 from tokenizers.implementations import BaseTokenizer, SentencePieceBPETokenizer
 from transformers import AddedToken, PreTrainedTokenizerBase
 import typer
@@ -190,63 +189,90 @@ def merge_tokenizers(
     return base_tokenizer.add_tokens(vocab_to_add)
 
 # https://gucci-j.github.io/post/en/vocab-expansion/
-# Haven't made this work yet
-# TODO: https://github.com/huggingface/tokenizers/issues/627#issuecomment-2076489455
-def merge_tokenizers_sp_into_gpt2(
+# Ref: https://github.com/huggingface/tokenizers/issues/627#issuecomment-2076489455
+def merge_tokenizers_bpe(
         base_tokenizer: PreTrainedTokenizerBase,
         new_tokenizer: BaseTokenizer,
     ) -> int:
-    """Merge two tokenizers into a new tokenizer.
+    """Merge BPE merge rules from a SentencePiece tokenizer into a GPT2 tokenizer.
+
+    Unlike ``merge_tokenizers`` (which adds tokens as ``AddedToken`` entries),
+    this function integrates new tokens as proper BPE merge rules.  This allows
+    the tokenizer to decompose unseen Vietnamese subwords via merge rules rather
+    than falling back to byte-level tokenization.
+
+    New merge rules are appended after all base merges (lower priority), so
+    existing English tokenization is preserved.  Merges that reference tokens
+    missing from the combined vocabulary are skipped with a warning.
 
     Args:
-        base_tokenizer (PreTrainedTokenizerBase): The pretrained tokenizer to extend.
-        new_tokenizer (BaseTokenizer): The tokenizer trained on the new language.
+        base_tokenizer: The pretrained GPT2-style tokenizer to extend.
+        new_tokenizer: The SentencePiece BPE tokenizer trained on Vietnamese.
 
     Returns:
-        int: The number of new tokens.
+        The number of new tokens added to the base tokenizer's vocabulary.
     """
-    # Only add the new tokens
-    # TODO: don't add numeric tokens with 2+ digits
-    base_tokenizer_json = json.loads(base_tokenizer._tokenizer.to_str())
-    base_vocab = base_tokenizer_json['model']['vocab']
-    base_merges = base_tokenizer_json['model']['merges']
+    base_json = json.loads(base_tokenizer._tokenizer.to_str())
+    base_vocab: dict = base_json['model']['vocab']
+    base_merges: list = base_json['model']['merges']
 
-    new_tokenizer_json = json.loads(new_tokenizer._tokenizer.to_str())
-    new_vocab = new_tokenizer_json['model']['vocab']
-    new_merges = new_tokenizer_json['model']['merges']
+    new_json = json.loads(new_tokenizer._tokenizer.to_str())
+    new_vocab: dict = new_json['model']['vocab']
+    new_merges: list = new_json['model']['merges']
 
+    # Build combined vocabulary (base tokens keep their IDs)
+    combined_vocab = copy.copy(base_vocab)
     num_new_tokens = 0
-    ret_vocab = copy.copy(base_vocab)
-    ret_merges = []
-    old_merges = copy.copy(base_merges)
-
     for token in new_vocab:
-        if token not in ret_vocab:
-            ret_vocab[token] = len(ret_vocab)
+        if token not in combined_vocab:
+            combined_vocab[token] = len(combined_vocab)
             num_new_tokens += 1
 
-    for merge in new_merges:
-        # Add vocab
-        [token_1, token_2] = merge
-        token = token_1 + token_2
+    # Use a set for O(1) duplicate detection instead of O(n) list removal
+    base_merges_set = {(m[0], m[1]) for m in base_merges}
 
-        # Add merges
-        if merge in old_merges:
-            old_merges.remove(merge)
-            ret_merges.append(merge)
-        elif token in ret_vocab and token_1 in ret_vocab and token_2 in ret_vocab:
-            ret_merges.append(merge)
+    # Collect new merges that are valid in the combined vocabulary.
+    # SP BPE merges are already in bottom-up dependency order.
+    additional_merges = []
+    skipped = 0
+    for merge in new_merges:
+        t1, t2 = merge[0], merge[1]
+        merge_key = (t1, t2)
+
+        # Skip merges already present in the base tokenizer
+        if merge_key in base_merges_set:
+            continue
+
+        # Only keep merges where both input tokens and the output token
+        # exist in the combined vocabulary
+        product = t1 + t2
+        if t1 in combined_vocab and t2 in combined_vocab and product in combined_vocab:
+            additional_merges.append(merge)
         else:
-            raise RuntimeError
-    
-    merges = ret_merges + old_merges
-    vocab = ret_vocab
-    new_tokenizer.model = BPE(
-        vocab=vocab,
-        merges=[(merge[0], merge[1]) for merge in merges],
-        fuse_unk=False,
-        #byte_fallback=True
+            skipped += 1
+
+    if skipped:
+        logger.warning(
+            "Skipped {} new merges referencing tokens outside combined vocabulary",
+            skipped,
+        )
+    logger.info(
+        "Adding {} new tokens and {} new merge rules (skipped {} shared, {} invalid)",
+        num_new_tokens,
+        len(additional_merges),
+        len(new_merges) - len(additional_merges) - skipped,
+        skipped,
     )
+
+    # Reconstruct the base tokenizer with extended vocab and merges.
+    # Base merges retain higher priority; new merges are appended at the end.
+    all_merges = base_merges + additional_merges
+    base_json['model']['vocab'] = combined_vocab
+    base_json['model']['merges'] = all_merges
+
+    # Apply the modified model back to the base tokenizer
+    from tokenizers import Tokenizer as HFTokenizer
+    base_tokenizer._tokenizer = HFTokenizer.from_str(json.dumps(base_json))
 
     return num_new_tokens
 
@@ -269,6 +295,10 @@ def main(
         dropout_rate: float = DROPOUT_RATE,
         limit_vietnamese_alphabet: int = LIMIT_VIETNAMESE_ALPHABET,
         seed: int = SEED,
+        use_bpe_merges: Annotated[
+            bool,
+            typer.Option(help="Use BPE merge integration instead of added_tokens (experimental)")
+        ] = False,
 ):
     """Extend the vocabulary of SmolLM using the prepared Vietnamese corpus."""
     datasets = load_vietnamese_corpus(dataset_dirs)
@@ -294,11 +324,15 @@ def main(
     logger.info("Base tokenizer vocabulary size: {}", len(base_tokenizer))
 
     # Merge into base_tokenizer
-    n_added_tokens = merge_tokenizers(
-        base_tokenizer,
-        new_tokenizer,
-        logging_dir=(tokenizer_out_dir / "logs"),
-    )
+    if use_bpe_merges:
+        logger.info("Using BPE merge integration (experimental)")
+        n_added_tokens = merge_tokenizers_bpe(base_tokenizer, new_tokenizer)
+    else:
+        n_added_tokens = merge_tokenizers(
+            base_tokenizer,
+            new_tokenizer,
+            logging_dir=(tokenizer_out_dir / "logs"),
+        )
     original_tokenizer = BASE_MODEL.load_tokenizer()
     effective_n_added_tokens = number_of_added_tokens(original_tokenizer, base_tokenizer)
     assert n_added_tokens == effective_n_added_tokens
@@ -327,8 +361,8 @@ def main(
             [base_tokenizer.decode(token) for token in old_encoding]
         )
 
-    # TODO: make the added tokens like part of the vocabulary
-    # Performance impact on tokenizer loaded with GPT2TokenizerFast.from_pretrained??
+    # NOTE: with --use-bpe-merges, tokens are integrated as BPE merge rules;
+    # without it, tokens are added via AddedToken (may not compose as well).
     base_tokenizer.save_pretrained(f"{tokenizer_out_dir / 'merged_tokenizer'}")
 
     logger.info("Saved tokenizer states in {}", tokenizer_out_dir)
