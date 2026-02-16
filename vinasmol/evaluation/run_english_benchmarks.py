@@ -9,7 +9,6 @@ Usage:
         --output-dir results/english
 """
 
-import json
 import subprocess
 import sys
 from pathlib import Path

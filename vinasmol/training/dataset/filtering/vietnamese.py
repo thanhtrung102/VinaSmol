@@ -12,7 +12,6 @@ from datatrove.pipeline.stats import (
     CCNetPerplexityStats,
     TopKConfig, StatsMerger
 )
-from datatrove.pipeline.dedup import ESDatasetToSequence, ESMergeSequences, ESRangeRemover
 from datatrove.pipeline.formatters import PIIFormatter
 from datatrove.pipeline.readers.jsonl import JsonlReader
 from datatrove.pipeline.readers.parquet import ParquetReader
@@ -27,7 +26,7 @@ from ..constants import (
     STOP_WORDS,
     FLAGGED_WORDS_SAILCRAFT,
 )
-from ..deduplication import ESComputeRangesExternal, RensaBuildIndex, RensaDeduplicate
+from ..deduplication import RensaBuildIndex, RensaDeduplicate
 from ..normalization import Formatter
 
 from . import (
@@ -36,7 +35,7 @@ from . import (
 )
 from .common import (
     JsonlShard, RetainMetadata, URLFilterWithWhitelist, LanguageFilterWithWhitelist,
-    FlaggedWordsThresholdFilter, PerplexityFilterWithWhitelist
+    FlaggedWordsThresholdFilter
 )
 
 VIETNAMESE_TOKENIZER = VINALLAMA_7B.tokenizer

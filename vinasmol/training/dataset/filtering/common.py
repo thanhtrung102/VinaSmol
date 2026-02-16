@@ -3,7 +3,6 @@ from pathlib import Path
 import re
 
 from datatrove.data import Document
-from datatrove.pipeline.formatters import base
 from datatrove.pipeline.base import PipelineStep
 from datatrove.pipeline.filters.base_filter import BaseFilter
 from datatrove.pipeline.filters import (

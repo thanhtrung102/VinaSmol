@@ -3,8 +3,6 @@
 import pytest
 
 from vinasmol.training.dataset.preprocessing import (
-    convert_en_wiki_to_md,
-    convert_vi_wiki_to_md,
     convert_mediawiki_to_md,
     replace_md_links_with_text,
     format_olmocr_pes2o,

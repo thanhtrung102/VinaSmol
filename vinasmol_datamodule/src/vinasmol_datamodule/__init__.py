@@ -5,7 +5,7 @@ from typing import Optional
 from torch.utils.data import DataLoader
 
 from litgpt import prompts
-from litgpt.data import DataModule, SFTDataset, Alpaca, alpaca, Deita, deita
+from litgpt.data import DataModule, SFTDataset, Alpaca, Deita, deita
 from litgpt.prompts import PromptStyle
 from litgpt.tokenizer import Tokenizer
 

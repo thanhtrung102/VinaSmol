@@ -1,10 +1,11 @@
 """Tests for EEVE multi-stage parameter freezing."""
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-import torch
 import torch.nn as nn
 
-from vinasmol.training.eeve import EEVEStage, freeze_for_stage, ORIGINAL_VOCAB_SIZE
+from vinasmol.training.eeve import EEVEStage, freeze_for_stage
 
 
 class MockGPTModel(nn.Module):
@@ -97,3 +98,41 @@ class TestEEVEStageEnum:
     def test_invalid_stage_raises(self):
         with pytest.raises(ValueError):
             EEVEStage(5)
+
+
+class TestFabricPatchIntegration:
+    """Test that _make_patched_setup correctly intercepts Fabric.setup."""
+
+    def test_patched_setup_calls_freeze_for_stage_on_model(self):
+        """Verify freeze_for_stage is invoked when Fabric.setup receives a model."""
+        from vinasmol.training.run_eeve import _make_patched_setup
+
+        model = MockGPTModel()
+        assert all(p.requires_grad for p in model.parameters())
+
+        # _make_patched_setup imports Fabric internally and captures its
+        # original .setup.  We mock Fabric.setup to simply return the model.
+        with patch("lightning.fabric.Fabric.setup", return_value=model):
+            patched_fn = _make_patched_setup(EEVEStage.STAGE_7)
+
+        # Invoke the patched function with a dummy self (the Fabric instance)
+        result = patched_fn(MagicMock(), model)
+
+        # After Stage 7: embeddings frozen, transformer layers trainable
+        frozen = {n for n, p in result.named_parameters() if not p.requires_grad}
+        trainable = {n for n, p in result.named_parameters() if p.requires_grad}
+        assert any("wte" in n for n in frozen), "wte should be frozen in Stage 7"
+        assert any("lm_head" in n for n in frozen), "lm_head should be frozen in Stage 7"
+        assert any("transformer.h" in n for n in trainable), "transformer.h should be trainable"
+
+    def test_patched_setup_skips_non_model_objects(self):
+        """Verify freeze_for_stage is NOT called on non-model objects like optimizers."""
+        from vinasmol.training.run_eeve import _make_patched_setup
+
+        optimizer_mock = MagicMock(spec=[])  # No named_parameters
+
+        with patch("lightning.fabric.Fabric.setup", return_value=optimizer_mock):
+            patched_fn = _make_patched_setup(EEVEStage.STAGE_3)
+
+        result = patched_fn(MagicMock(), optimizer_mock)
+        assert result is optimizer_mock

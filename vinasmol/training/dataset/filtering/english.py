@@ -30,7 +30,7 @@ from . import (
 )
 from .common import (
     JsonlShard, RetainMetadata, URLFilterWithWhitelist, LanguageFilterWithWhitelist,
-    FlaggedWordsThresholdFilter, PerplexityFilterWithWhitelist,
+    FlaggedWordsThresholdFilter,
 )
 
 top_k_config = TopKConfig(top_k_groups=["fqdn"], top_k=1_000)

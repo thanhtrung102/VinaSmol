@@ -5,7 +5,7 @@ from loguru import logger
 from tqdm import tqdm
 
 from ...hfmodel import BASE_MODEL, SMOLLM2, LUCIE
-from . import DATA_DIR, DATA_DIR_CODE, DATA_DIR_EN, DATA_DIR_VI
+from . import DATA_DIR, DATA_DIR_CODE, DATA_DIR_EN, DATA_DIR_EN_ANNEALING, DATA_DIR_VI
 from .preprocessing import (
     convert_mediawiki_to_md, format_vbpl_md,
     gutenberg_is_license_acceptable, clean_gutenberg_text,
@@ -139,42 +139,42 @@ def download_english_datasets(data_dir: Path):
         raise NotImplementedError(BASE_MODEL)
 
 def download_english_annealing_datasets(data_dir: Path):
-        # 10B tokens, 7M rows
-        finemath_4plus = load_dataset("HuggingFaceTB/finemath", "finemath-4plus", **LOAD_KWARGS)
-        finemath_4plus = (finemath_4plus
-            .map(NormalizeCols.finemath_4plus, remove_columns=finemath_4plus.column_names)
-            .shuffle(seed=SEED, buffer_size=1000)
-            .take(100_000)
-        )
-        to_sharded_parquet(finemath_4plus, data_dir / "finemath_4plus")
+    # 10B tokens, 7M rows
+    finemath_4plus = load_dataset("HuggingFaceTB/finemath", "finemath-4plus", **LOAD_KWARGS)
+    finemath_4plus = (finemath_4plus
+        .map(NormalizeCols.finemath_4plus, remove_columns=finemath_4plus.column_names)
+        .shuffle(seed=SEED, buffer_size=1000)
+        .take(100_000)
+    )
+    to_sharded_parquet(finemath_4plus, data_dir / "finemath_4plus")
 
-        # 42B tokens, 40M rows
-        # Higher-quality and up-to-date pes2o dataset with proper formatting
-        olmocr_pes2o = load_dataset("allenai/olmOCR-pes2o-0225", **LOAD_KWARGS)
-        olmocr_pes2o = (olmocr_pes2o
-            .map(NormalizeCols.olmocr_pes2o, remove_columns=olmocr_pes2o.column_names)
-            .shuffle(seed=SEED, buffer_size=1000)
-            .take(500_000)
-        )
-        to_sharded_parquet(olmocr_pes2o, data_dir / "olmocr_pes2o")
+    # 42B tokens, 40M rows
+    # Higher-quality and up-to-date pes2o dataset with proper formatting
+    olmocr_pes2o = load_dataset("allenai/olmOCR-pes2o-0225", **LOAD_KWARGS)
+    olmocr_pes2o = (olmocr_pes2o
+        .map(NormalizeCols.olmocr_pes2o, remove_columns=olmocr_pes2o.column_names)
+        .shuffle(seed=SEED, buffer_size=1000)
+        .take(500_000)
+    )
+    to_sharded_parquet(olmocr_pes2o, data_dir / "olmocr_pes2o")
 
-        # ~200MB, 200k rows
-        stackmathqa = load_dataset("math-ai/StackMathQA", "stackmathqa200k", split="train")
-        stackmathqa = (stackmathqa
-            .map(NormalizeCols.stackmathqa, remove_columns=stackmathqa.column_names)
-            .shuffle(seed=SEED)
-        )
-        to_sharded_parquet(stackmathqa, data_dir / "stackmathqa")
+    # ~200MB, 200k rows
+    stackmathqa = load_dataset("math-ai/StackMathQA", "stackmathqa200k", split="train")
+    stackmathqa = (stackmathqa
+        .map(NormalizeCols.stackmathqa, remove_columns=stackmathqa.column_names)
+        .shuffle(seed=SEED)
+    )
+    to_sharded_parquet(stackmathqa, data_dir / "stackmathqa")
 
-        # ~400GB, ~300M rows
-        # Temporarily excluded because of the large download
-        #flan_v2 = load_dataset("SirNeural/flan_v2", **LOAD_KWARGS)
-        #(flan_v2
-        #    .map(NormalizeCols.flan_v2, remove_columns=flan_v2.column_names)
-        #    .shuffle(seed=SEED, buffer_size=1000)
-        #    .take(500_000)
-        #    .to_parquet(data_dir / "flan_v2.parquet")
-        #)
+    # ~400GB, ~300M rows
+    # Temporarily excluded because of the large download
+    #flan_v2 = load_dataset("SirNeural/flan_v2", **LOAD_KWARGS)
+    #(flan_v2
+    #    .map(NormalizeCols.flan_v2, remove_columns=flan_v2.column_names)
+    #    .shuffle(seed=SEED, buffer_size=1000)
+    #    .take(500_000)
+    #    .to_parquet(data_dir / "flan_v2.parquet")
+    #)
 
 def download_code_datasets(data_dir: Path):
     # 5 GB, 3M rows

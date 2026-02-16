@@ -32,7 +32,7 @@ precision: bf16-mixed
 
 # Optional path to a checkpoint directory to initialize the model from.
 # Useful for continued pretraining. Mutually exclusive with ``resume``. (type: Optional[Path], default: null)
-initial_checkpoint_dir:
+initial_checkpoint_dir: checkpoints/VinaSmol/cpt/eeve_stage_7/final
 
 # Path to a checkpoint directory to resume from in case training was interrupted, or ``True`` to resume
 # from the latest checkpoint in ``out_dir``. An error will be raised if no checkpoint is found. Passing
