@@ -1,4 +1,5 @@
 import asyncio
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,59 +14,140 @@ from .resource import ListResource
 OUT_DATASET_DIR = DATA_DIR / "ccvj" / "parquet"
 REPO_ID = "ccvj"
 
+# Patterns for cleaning academic paper markdown
+_REFERENCES_RE = re.compile(
+    r"^(?:#+\s*)?(?:References|Tài liệu tham khảo|TÀI LIỆU THAM KHẢO).*",
+    flags=re.DOTALL | re.MULTILINE,
+)
+_ACKNOWLEDGMENTS_RE = re.compile(
+    r"^(?:#+\s*)?(?:Acknowledgm?ents?|Lời cảm ơn).*?(?=^#|\Z)",
+    flags=re.DOTALL | re.MULTILINE,
+)
+_HEADER_FOOTER_RE = re.compile(
+    r"^(?:Vol\.|Tập|Số|No\.|ISSN|DOI:|http[s]?://doi).*$",
+    flags=re.MULTILINE,
+)
+_PAGE_NUMBER_RE = re.compile(r"^\s*\d{1,4}\s*$", flags=re.MULTILINE)
+_EXCESSIVE_NEWLINES_RE = re.compile(r"\n{4,}")
+
+
 @dataclass
 class ConversionResult:
     input_pdf_file: Path
     output_md_file: Path
     success: bool
 
+
 class PaperProcessor:
     def __init__(self):
         self.results: list[ConversionResult] = []
-    
+        self._converter = None
+
+    def _get_converter(self):
+        """Lazily initialize the Docling converter."""
+        if self._converter is None:
+            from docling.document_converter import DocumentConverter
+            self._converter = DocumentConverter()
+        return self._converter
+
     def postprocess_md(self, md_content: str) -> str:
-        """Clean the markdown content to remove superfluous items."""
-        raise NotImplementedError
+        """Clean the markdown content to remove superfluous items.
+
+        Removes:
+        - References/bibliography section
+        - Acknowledgments section
+        - Journal headers/footers (volume, ISSN, DOI lines)
+        - Standalone page numbers
+        - Excessive blank lines
+        """
+        md_content = _REFERENCES_RE.sub("", md_content)
+        md_content = _ACKNOWLEDGMENTS_RE.sub("", md_content)
+        md_content = _HEADER_FOOTER_RE.sub("", md_content)
+        md_content = _PAGE_NUMBER_RE.sub("", md_content)
+        md_content = _EXCESSIVE_NEWLINES_RE.sub("\n\n", md_content)
+        return md_content.strip()
 
     async def convert_pdf(
             self,
             pdf_file: str | Path,
             output_md_file: str | Path,
         ) -> ConversionResult:
-        """Process a PDF paper using scienceparse.
+        """Convert a PDF paper to Markdown using Docling.
 
         Args:
-            pdf_file (str | Path): the path to the downloaded paper as a PDF file.
-            output_md_file (str | Path): the file path to write Markdown content.
+            pdf_file: the path to the downloaded paper as a PDF file.
+            output_md_file: the file path to write Markdown content.
         Returns:
             ConversionResult: whether the PDF file was successfully converted.
         """
-        # TODO: conversion should depend on whether the PDF is a whole issue or a single article
-        # issues: remove title page with TOC
-        raise NotImplementedError
+        pdf_file = Path(pdf_file)
+        output_md_file = Path(output_md_file)
+
+        try:
+            converter = self._get_converter()
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None,
+                lambda: converter.convert(str(pdf_file)),
+            )
+
+            md_content = result.document.export_to_markdown()
+            md_content = self.postprocess_md(md_content)
+
+            if not md_content or len(md_content) < 100:
+                logger.warning("Conversion produced too little text for: {}", pdf_file.name)
+                return ConversionResult(
+                    input_pdf_file=pdf_file,
+                    output_md_file=output_md_file,
+                    success=False,
+                )
+
+            output_md_file.parent.mkdir(parents=True, exist_ok=True)
+            output_md_file.write_text(md_content, encoding="utf-8")
+
+            return ConversionResult(
+                input_pdf_file=pdf_file,
+                output_md_file=output_md_file,
+                success=True,
+            )
+        except Exception as e:
+            logger.error("Failed to convert {}: {}", pdf_file.name, e)
+            return ConversionResult(
+                input_pdf_file=pdf_file,
+                output_md_file=output_md_file,
+                success=False,
+            )
 
     async def convert_papers(self, download_dir: str | Path) -> list[ConversionResult]:
-        """Process PDF papers in bulk using scienceparse.
+        """Process PDF papers in bulk using Docling.
 
         Args:
-            download_dir (str | Path): the directory that contains the downloaded PDFs.
+            download_dir: the directory that contains the downloaded PDFs.
 
         Returns:
-            results (list[ConversionResult]): the conversion results.
+            results: the conversion results.
         """
         download_dir = Path(download_dir)
 
-        # TODO: multiprocessing with pool
         tasks = []
-        for pdf_file in download_dir.glob("*.pdf"):
-            md_file = download_dir / pdf_file.name.replace(".pdf", ".md")
+        for pdf_file in sorted(download_dir.glob("**/*.pdf")):
+            md_file = pdf_file.with_suffix(".md")
+            if md_file.exists():
+                self.results.append(ConversionResult(
+                    input_pdf_file=pdf_file,
+                    output_md_file=md_file,
+                    success=True,
+                ))
+                continue
             task = self.convert_pdf(pdf_file, md_file)
             tasks.append(task)
 
-        results: list[ConversionResult] = await asyncio.gather(*tasks)
-        self.results.extend(results)
+        if tasks:
+            results: list[ConversionResult] = await asyncio.gather(*tasks)
+            self.results.extend(results)
 
-        return results
+        return self.results
+
 
 def compile_dataset(
         records: dict[JournalId, ListResource[RecordMetadata]],
@@ -75,9 +157,10 @@ def compile_dataset(
     """Compile a Parquet dataset into a directory.
 
     Args:
-        markdown_files (dict[Path, Path]): mapping from PDF files to Markdown files.
-        dataset_dir (Path): the output directory for the Parquet files.
-    
+        records: journal records with metadata.
+        markdown_files: mapping from PDF files to Markdown files.
+        dataset_dir: the output directory for the Parquet files.
+
     Returns:
         DatasetBuilder: a builder of the compiled Parquet dataset files.
     """
@@ -85,35 +168,42 @@ def compile_dataset(
     def gen_journal_records(journal: JournalId, journal_records: list[RecordMetadata]):
         for record in journal_records:
             if 'local_pdf_file' not in record:
-                # PDF was not downloaded yet
                 continue
             local_pdf = record['local_pdf_file']
             if local_pdf not in markdown_files:
-                # PDF was not converted yet
                 continue
-            record['local_md_file'] = markdown_files[local_pdf]
-            record['journal_id'] = journal
-            record['text'] = record['local_md_file'].read_text()
-            #del record['local_pdf_file']
-            #del record['local_md_file']
-            yield record
+            md_file = markdown_files[local_pdf]
+            try:
+                text = md_file.read_text(encoding="utf-8")
+            except Exception as e:
+                logger.warning("Failed to read {}: {}", md_file, e)
+                continue
+            if len(text) < 100:
+                continue
+            yield dict(
+                text=text,
+                journal_id=journal,
+                title=record.get('title', ''),
+                url=record.get('url', ''),
+            )
+
+    dataset_dir.mkdir(parents=True, exist_ok=True)
 
     for journal, journal_records in tqdm(records.items(), desc="Compile journals"):
         journal_ds = Dataset.from_generator(
             gen_journal_records,
             gen_kwargs=dict(journal=journal, journal_records=journal_records),
         )
-        journal_ds.to_parquet(dataset_dir / f"{journal}.parquet")
+        if len(journal_ds) > 0:
+            journal_ds.to_parquet(dataset_dir / f"{journal}.parquet")
 
     return load_dataset_builder(
-        'text',
-        data_files=OUT_DATASET_DIR / "*.parquet",
+        'parquet',
+        data_files=str(OUT_DATASET_DIR / "*.parquet"),
     )
 
-    
 
 def process_papers(processor: PaperProcessor, pdf_dir: Path) -> dict[Path, Path]:
-    # TODO: multiprocessing instead
     results = asyncio.run(processor.convert_papers(pdf_dir))
 
     pdf_to_md = {}
@@ -125,10 +215,12 @@ def process_papers(processor: PaperProcessor, pdf_dir: Path) -> dict[Path, Path]
             successes.append(result)
         else:
             failures.append(result)
-    
+
     logger.info("{} PDFs successfully converted to Markdown.", len(successes))
-    logger.warning("{} PDFs couldn't be converted.", len(failures))
+    if failures:
+        logger.warning("{} PDFs couldn't be converted.", len(failures))
     return pdf_to_md
+
 
 def compile_and_load_ccvj(
         records: dict[JournalId, ListResource[RecordMetadata]],
@@ -148,14 +240,15 @@ app = typer.Typer(pretty_exceptions_show_locals=False)
 @app.command()
 def main(
         pdf_dir: Path = PDF_DOWNLOAD_DIR,
-        #out_dataset_dir: Path = OUT_DATASET_DIR,
-        #repo_id: str = REPO_ID,
     ):
-      
+    """Convert CCVJ PDFs to Markdown using Docling."""
+    logger.info("Converting PDFs from: {}", pdf_dir)
+
     processor = PaperProcessor()
     pdf_to_md = process_papers(processor, pdf_dir)
 
-    # TODO: upload to HuggingFace if not created, otherwise load_dataset the uploaded version
-    #downloader = CCVJDownloader(...)
-    #dataset = compile_and_load_ccvj(downloader.records, pdf_to_md, streaming=True)
-    #dataset.push_to_hub(repo_id, private=True)
+    logger.info("Conversion complete. {} files converted.", len(pdf_to_md))
+
+
+if __name__ == "__main__":
+    app()

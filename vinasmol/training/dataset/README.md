@@ -85,7 +85,8 @@ For the initial pretraining phase, we use:
 
 Cosmopedia v2 and FineWebEdu are both part of SmolLM's training corpus. Due to the large size of these datasets and the small size of SmolLM2-360M, we inferred that the risk of overfitting was low enough to include them as replay datasets.
 
-FIXME: Cosmopedia should have been an annealing dataset
+> [!NOTE]
+> Cosmopedia v2, as a synthetic high-quality dataset, may be better suited for the annealing phase. Consider moving it to the annealing mixture in future training runs.
 
 ### Code datasets
 

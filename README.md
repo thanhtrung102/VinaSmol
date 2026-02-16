@@ -1,5 +1,7 @@
 # VinaSmol: Extending SmolLM with Vietnamese
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
 VinaSmol is a proof-of-concept project that aims to add Vietnamese language capabilities and knowledge to [SmolLM 360M](https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct).
 
 Our approach aims to demonstrate that efficient pretraining methods on an open, medium-sized Vietnamese dataset (less than 10B tokens) can effectively integrate a new language into an LLM that was not trained on it.
@@ -58,8 +60,16 @@ We are looking forward further enhancements for VinaSmol:
 
 ## Contribution
 
-VinaSmol is still in development. We welcome any kind of contribution, including suggestions concerning our training methodology. Feel free to open an issue to get started.
+VinaSmol is still in development. We welcome any kind of contribution, including suggestions concerning our training methodology. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and feel free to open an issue to get started.
 
 ## Citation
 
-TODO
+```bibtex
+@techreport{vutu2025vinasmol,
+  title={VinaSmol: Efficient Extension of an English-only SLM to Vietnamese},
+  author={Vu Tu, Linh},
+  year={2025},
+  institution={\'Ecole polytechnique, LINAGORA},
+  note={Technical report (unreleased)}
+}
+```

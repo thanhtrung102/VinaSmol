@@ -141,7 +141,7 @@ class FlaggedWordsThresholdFilter(C4BadWordsFilter):
             elif isinstance(flagged, dict):
                 scores = flagged
             else:
-                raise TypeError("Wrong type for scores:", type(scores))
+                raise TypeError(f"Expected list or dict for flagged words, got {type(flagged)}")
             escaped_words = [re.escape(w.lower()) for w in flagged]
             # Must span over complete syllables
             flagged_re = re.compile(r"(?:\W|^)({})(?:\W|$)".format("|".join(escaped_words)))

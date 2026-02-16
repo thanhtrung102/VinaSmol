@@ -274,8 +274,29 @@ def download_vietnamese_datasets(data_dir: Path):
     to_sharded_parquet(vbpl, data_dir / "vbpl")
 
 def download_vietnamese_annealing_datasets(data_dir: Path):
-    # TODO: CCVJ
-    pass
+    """Download and prepare Vietnamese annealing datasets including CCVJ.
+
+    CCVJ (CreativeCommons Vietnamese Journals) must be pre-converted to
+    Parquet format using the ccvj package before running this function.
+    See ccvj/src/ccvj/README.md for instructions.
+    """
+    ccvj_parquet_dir = Path("ccvj/src/ccvj/data/ccvj/parquet")
+    if not ccvj_parquet_dir.exists() or not list(ccvj_parquet_dir.glob("*.parquet")):
+        logger.warning(
+            "CCVJ Parquet files not found at {}. "
+            "Run 'uv run python -m ccvj.convert' first. Skipping CCVJ.",
+            ccvj_parquet_dir,
+        )
+        return
+
+    ccvj_ds = load_dataset(
+        "parquet",
+        data_files=str(ccvj_parquet_dir / "*.parquet"),
+        split="train",
+        streaming=True,
+    )
+    ccvj_ds = ccvj_ds.map(NormalizeCols.ccvj, remove_columns=ccvj_ds.column_names)
+    to_sharded_parquet(ccvj_ds, data_dir / "ccvj")
 
 
 if __name__ == "__main__":

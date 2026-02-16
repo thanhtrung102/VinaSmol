@@ -1,8 +1,5 @@
 # Continued Pre-Training
 
-> [!NOTE]
->  This page is a work in progress.
-
 ## Run
 
 ### First stage
@@ -90,9 +87,22 @@ In order to follow the multi-stage training of EEVE, we customize the [continued
 
 ## Recipe
 
-> [!WARNING]
->
-> The current implementation is based on standard continued pretraining without any kind of parameter freezing. EEVE is planned to be implemented soon but requires modifications to the default LitGPT training script.
+The EEVE multi-stage training is implemented in [`eeve.py`](./eeve.py) with per-stage YAML configs and an orchestration script.
+
+To run all 4 EEVE stages sequentially:
+
+```bash
+cd vinasmol/training
+bash cpt_eeve_stages.sh
+```
+
+To resume from a specific stage (e.g., stage 6):
+
+```bash
+bash cpt_eeve_stages.sh 6
+```
+
+Each stage has its own config file (`cpt_eeve_stage_{3,4,6,7}.yml`) and initializes from the previous stage's final checkpoint.
 
 ### Vocabulary extension
 

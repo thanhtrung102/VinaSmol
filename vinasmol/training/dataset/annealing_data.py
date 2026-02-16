@@ -69,30 +69,52 @@ def main(
         streaming=True,
     )
 
-    # We assume that the datasets are (mostly) disjoint and already shuffled
+    # CCVJ (CreativeCommons Vietnamese Journals) - high-quality academic papers
+    ccvj_dir = DATA_DIR / "preprocessed" / "ccvj"
+    ccvj = None
+    if ccvj_dir.exists() and list(ccvj_dir.glob("*.parquet")):
+        ccvj = load_dataset(
+            "parquet",
+            data_files=str(ccvj_dir / "*.parquet"),
+            split='train',
+            streaming=True,
+        )
+        logger.info("Loaded CCVJ dataset for annealing.")
+    else:
+        logger.warning("CCVJ dataset not found at {}. Skipping.", ccvj_dir)
+
+    # Build the annealing mixture
+    subsets = [
+        wikipedia_en,
+        gutenberg_en,
+        wikipedia_vi,
+        binhvq_news_corpus,
+        finemath_4plus,
+        stackmathqa,
+    ]
+    proportions = [
+        0.1,   # wikipedia_en
+        0.1,   # gutenberg_en
+        0.15,  # wikipedia_vi
+        0.2,   # binhvq_news_corpus
+        0.2,   # finemath_4plus
+        0.1,   # stackmathqa
+    ]
+
+    if ccvj is not None:
+        subsets.append(ccvj)
+        proportions.append(0.15)  # ccvj
+
+    # Normalize proportions to sum to 1.0
+    total = sum(proportions)
+    proportions = [p / total for p in proportions]
+
     all_subsets: list[IterableDataset] = [
         subset.map(
             partial(strip_metadata_to, fields_to_keep=['origin', 'url']),
             remove_columns=list(set(subset.column_names) - {'id', 'text'})
         )
-        # TODO: add pretraining datasets but with different subsets and same proportions
-        # to avoid training on the same examples
-        for subset in [
-            wikipedia_en,
-            gutenberg_en,
-            wikipedia_vi,
-            binhvq_news_corpus,
-            finemath_4plus,
-            stackmathqa,
-        ]
-    ]
-    proportions = [
-        0.1,
-        0.1,
-        0.2,
-        0.3,
-        0.2,
-        0.1,
+        for subset in subsets
     ]
 
     probabilities = np.zeros(len(proportions))

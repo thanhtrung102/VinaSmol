@@ -1,8 +1,5 @@
 # Finetuning
 
-> [!NOTE]
->  This page is a work in progress.
-
 We finetune VinaSmol on Vietnamese conversation and instruction data in order to improve its response quality. We also perform English finetuning again as continued pretraining on billions of tokens significantly deteriorates instruction capabilities.
 
 ## Run

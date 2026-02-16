@@ -12,27 +12,59 @@ from vinasmol.hfmodel import LUCIE, SMOLLM2
 def filter_keys(d: dict, keys: list[str]) -> dict:
     return {k: d[k] for k in keys}
 
+_WIKI_INFOBOX_RE = re.compile(r"\{\{Infobox[^}]*\}\}", flags=re.DOTALL)
+_WIKI_CATEGORY_RE = re.compile(r"\[\[Category:[^\]]+\]\]")
+_WIKI_FILE_RE = re.compile(r"\[\[(?:File|Image|Tập tin|Hình):[^\]]+\]\]")
+_WIKI_EN_END_SECTIONS_RE = re.compile(
+    r"^(==\s*(?:See also|References|External links|Further reading|Notes|Bibliography)\s*==).*",
+    flags=re.DOTALL | re.MULTILINE,
+)
+_WIKI_VI_END_SECTIONS_RE = re.compile(
+    r"^(==\s*(?:Liên kết ngoài|Tham khảo|Thể loại|Xem thêm|Đọc thêm|Chú thích)\s*==).*",
+    flags=re.DOTALL | re.MULTILINE,
+)
+
+def _clean_mediawiki(mediawiki: str, end_sections_re: re.Pattern) -> str:
+    """Common MediaWiki cleanup before conversion."""
+    # Remove infoboxes, file embeds, categories
+    mediawiki = _WIKI_INFOBOX_RE.sub("", mediawiki)
+    mediawiki = _WIKI_FILE_RE.sub("", mediawiki)
+    mediawiki = _WIKI_CATEGORY_RE.sub("", mediawiki)
+    # Remove trailing sections (references, see also, etc.)
+    mediawiki = end_sections_re.sub("", mediawiki)
+    return mediawiki
+
+
 def convert_en_wiki_to_md(title: str, mediawiki: str) -> str:
     """Format an English Wikipedia page to Markdown.
 
     Args:
-        mediawiki (str): the page content, in MediaWiki format.
+        title: the article title.
+        mediawiki: the page content, in MediaWiki format.
 
     Returns:
         str: The formatted content as Github-Flavored Markdown.
     """
-    raise NotImplementedError
+    mediawiki = _clean_mediawiki(mediawiki, _WIKI_EN_END_SECTIONS_RE)
+    md = pypandoc.convert_text(mediawiki, "gfm", format="mediawiki")
+    md = f"# {title}\n\n{md}"
+    return md.strip()
+
 
 def convert_vi_wiki_to_md(title: str, mediawiki: str) -> str:
     """Format a Vietnamese Wikipedia page to Markdown.
 
     Args:
-        mediawiki (str): the page content, in MediaWiki format.
+        title: the article title.
+        mediawiki: the page content, in MediaWiki format.
 
     Returns:
         str: The formatted content as Github-Flavored Markdown.
     """
-    raise NotImplementedError
+    mediawiki = _clean_mediawiki(mediawiki, _WIKI_VI_END_SECTIONS_RE)
+    md = pypandoc.convert_text(mediawiki, "gfm", format="mediawiki")
+    md = f"# {title}\n\n{md}"
+    return md.strip()
 
 _WIKI_TEMPLATE_RE = re.compile(r"\{\{[^\}]+\}\}", flags=re.MULTILINE)
 _WIKI_END_SECTIONS_TO_REMOVE_RE = re.compile(
@@ -43,22 +75,28 @@ _WIKI_TEMPLATE_ARTIFACTS_RE = re.compile(r"^\s+(?:\{\{|\|).+\n", flags=re.MULTIL
 _WIKI_EMPTY_PARENS_RE = re.compile(r"\([ ,;]*\)")
 
 def convert_mediawiki_to_md(row: dict, lang: str = 'en') -> dict:
-    """Replace `'text'` by converting the `'raw_mediawiki'` to Markdown."""
-    # TODO: process Wikipedia using wikiplaintext separately
-    # match lang:
-    #     case 'en':
-    #         fmt = convert_en_wiki_to_md
-    #     case 'vi':
-    #         fmt = convert_vi_wiki_to_md
-    # row['text'] = fmt(row['title'], row['raw_mediawiki'])
+    """Replace `'text'` by converting the `'raw_mediawiki'` to Markdown.
 
-    for pat in [
-        _WIKI_TEMPLATE_RE,
-        _WIKI_TEMPLATE_ARTIFACTS_RE,
-        _WIKI_EMPTY_PARENS_RE,
-        _WIKI_END_SECTIONS_TO_REMOVE_RE,
-    ]:
-        row['text'] = pat.sub("", row['text'])
+    Uses pypandoc for full MediaWiki→Markdown conversion when 'raw_mediawiki'
+    is available, otherwise falls back to regex-based cleaning of 'text'.
+    """
+    if 'raw_mediawiki' in row and row['raw_mediawiki']:
+        match lang:
+            case 'en':
+                row['text'] = convert_en_wiki_to_md(row['title'], row['raw_mediawiki'])
+            case 'vi':
+                row['text'] = convert_vi_wiki_to_md(row['title'], row['raw_mediawiki'])
+            case _:
+                row['text'] = convert_en_wiki_to_md(row['title'], row['raw_mediawiki'])
+    else:
+        # Fallback: regex-based cleaning when raw MediaWiki is not available
+        for pat in [
+            _WIKI_TEMPLATE_RE,
+            _WIKI_TEMPLATE_ARTIFACTS_RE,
+            _WIKI_EMPTY_PARENS_RE,
+            _WIKI_END_SECTIONS_TO_REMOVE_RE,
+        ]:
+            row['text'] = pat.sub("", row['text'])
     return row
 
 _MD_LINK_RE = re.compile(r"\[([^\[\]]+)\]\(([^)]+)\)")
@@ -573,5 +611,14 @@ class NormalizeCols:
     
     @staticmethod
     def ccvj(row: dict) -> dict:
-        # TODO
-        raise NotImplementedError
+        id = DatasetNames.ccvj.generate_row_id()
+        return dict(
+            id=id,
+            text=row['text'],
+            metadata=dict(
+                url=row.get('url', f"{DatasetNames.ccvj.placeholder_domain}/{id}"),
+                title=row.get('title', ''),
+                journal_id=row.get('journal_id', ''),
+                **DatasetNames.ccvj.origin_metadata(),
+            )
+        )

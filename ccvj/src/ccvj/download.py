@@ -637,7 +637,7 @@ def main(
         user_agent: str = USER_AGENT,
         force_refresh_records: bool = False,
     ):
-    setup_logging(logger, logfile)
+    setup_logging(logfile)
 
     downloader = CCVJDownloader(
         pdf_dir=pdf_dir,

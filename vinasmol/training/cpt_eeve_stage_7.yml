@@ -1,0 +1,76 @@
+# EEVE Stage 7: Train only transformer layers
+# Embeddings (wte, lm_head) are frozen. Only the transformer
+# blocks (transformer.h.*) are trained.
+
+model_name: VinaSmol-360M
+
+model_config:
+  name: VinaSmol-360M
+  hf_config: {}
+  block_size: 8192
+  vocab_size: 55936
+  padded_vocab_size: 55936
+  n_layer: 32
+  n_head: 15
+  n_query_groups: 5
+  n_embd: 960
+  rotary_percentage: 1.0
+  parallel_residual: false
+  bias: false
+  norm_class_name: RMSNorm
+  mlp_class_name: LLaMAMLP
+  intermediate_size: 2560
+  rope_base: 100000
+  norm_eps: 1e-5
+
+out_dir: checkpoints/VinaSmol/cpt/eeve_stage_7
+
+precision: bf16-mixed
+
+# Initialize from Stage 6 checkpoint
+initial_checkpoint_dir: checkpoints/VinaSmol/cpt/eeve_stage_6/final
+
+resume: false
+
+data:
+  class_path: vinasmol_datamodule.VinaSmolData
+  init_args:
+    num_workers: 4
+    data_path: ./dataset/data/tokenized
+    annealing: false
+
+train:
+  save_interval: 100
+  log_interval: 1
+  global_batch_size: 64
+  micro_batch_size: 2
+  lr_warmup_steps: 10
+  epochs:
+  max_tokens: 400000000
+  max_steps:
+  max_seq_length: 2048
+  tie_embeddings: true
+  max_norm: 1.0
+  min_lr: 1.0e-05
+
+eval:
+  interval: 50
+  max_new_tokens:
+  max_iters: 100
+  initial_validation: false
+  final_validation: false
+
+optimizer:
+  class_path: torch.optim.AdamW
+  init_args:
+    lr: 1e-4  # Lower LR for transformer-only tuning
+    weight_decay: 0.1
+    betas:
+      - 0.9
+      - 0.95
+
+devices: auto
+num_nodes: 1
+tokenizer_dir: ../tokenization/checkpoints/merged_tokenizer
+logger_name: tensorboard
+seed: 20250830

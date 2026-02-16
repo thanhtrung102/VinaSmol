@@ -3,12 +3,14 @@ name = "vinasmol"
 version = "0.1.0"
 description = "Vietnamese brought to SmolLM 360M"
 readme = "README.md"
+license = {text = "Apache-2.0"}
 requires-python = ">=3.12"
 dependencies = [
     "accelerate",
-    # FIXME: datasets>=4.0 is necessary for IterableDataset.to_parquet
-    # and for compatibility with new column formats, but is incompatible with litgpt>=0.5
-    "datasets",
+    # NOTE: datasets>=4.0 is necessary for IterableDataset.to_parquet
+    # and for compatibility with new column formats. Pin to a version
+    # compatible with litgpt>=0.5 if issues arise.
+    "datasets>=3.0,<5.0",
     "datatrove[io,processing,cli]>=0.6",
     "diskcache",
     "ftfy",
@@ -32,6 +34,15 @@ dependencies = [
     "typer",
     "vinasmol_datamodule",
     "mergekit>=0.1",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+eval = [
+    "lm-eval>=0.4",
 ]
 
 [dependency-groups]
