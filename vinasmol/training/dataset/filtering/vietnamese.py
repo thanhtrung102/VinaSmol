@@ -1,5 +1,11 @@
+import shutil
 
 from datatrove.executor.local import LocalPipelineExecutor
+from datatrove.pipeline.dedup.exact_substrings import (
+    ESDatasetToSequence,
+    ESMergeSequences,
+    ESRangeRemover,
+)
 from datatrove.pipeline.filters import (
     C4QualityFilter,
     FineWebQualityFilter,
@@ -8,7 +14,7 @@ from datatrove.pipeline.filters import (
 )
 from datatrove.pipeline.stats import (
     DocStats, LineStats, ParagraphStats,
-    WordStats, SentenceStats, TokenStats, 
+    WordStats, SentenceStats, TokenStats,
     CCNetPerplexityStats,
     TopKConfig, StatsMerger
 )
@@ -26,7 +32,10 @@ from ..constants import (
     STOP_WORDS,
     FLAGGED_WORDS_SAILCRAFT,
 )
-from ..deduplication import RensaBuildIndex, RensaDeduplicate
+from ..deduplication import (
+    RensaBuildIndex, RensaDeduplicate,
+    ESComputeRangesExternal, apply_uint32_patch,
+)
 from ..normalization import Formatter
 
 from . import (
@@ -37,6 +46,10 @@ from .common import (
     JsonlShard, RetainMetadata, URLFilterWithWhitelist, LanguageFilterWithWhitelist,
     FlaggedWordsThresholdFilter
 )
+
+# Exact substring deduplication requires the Rust toolchain (cargo).
+# When enabled, it adds 3 pipeline stages after MinHash document dedup.
+ENABLE_EXACT_SUBSTRING_DEDUP = shutil.which("cargo") is not None
 
 VIETNAMESE_TOKENIZER = VINALLAMA_7B.tokenizer
 
@@ -231,42 +244,49 @@ document_dedup_stage = LocalPipelineExecutor(
 
 tasks_sequence_dedup = 16
 
-# sequence_dedup_stage_1 = LocalPipelineExecutor(
-#     pipeline=[
-#         JsonlReader(output_intermediate_2),
-#         ESDatasetToSequence(
-#             output_folder=es_dir_vi,
-#             tokenizer_name_or_path=VIETNAMESE_TOKENIZER,
-#         ),
-#     ],
-#     workers=tasks_sequence_dedup,
-#     tasks=tasks_sequence_dedup,
-#     logging_dir=f"{LOGGING_DIR}/es/1/{CORPUS}",
-#     depends=document_dedup_stage,
-# )
+if ENABLE_EXACT_SUBSTRING_DEDUP:
+    apply_uint32_patch()
 
-# sequence_dedup_stage_2 = LocalPipelineExecutor(
-#     pipeline=[
-#         ESMergeSequences(
-#             data_folder=es_dir_vi,
-#             tasks_stage_1=tasks_sequence_dedup,
-#         ),
-#     ],
-#     logging_dir=f"{LOGGING_DIR}/es/2/{CORPUS}",
-#     depends=sequence_dedup_stage_1,
-# )
+    sequence_dedup_stage_1 = LocalPipelineExecutor(
+        pipeline=[
+            JsonlReader(output_intermediate_2),
+            ESDatasetToSequence(
+                output_folder=es_dir_vi,
+                tokenizer_name_or_path=VIETNAMESE_TOKENIZER,
+            ),
+        ],
+        workers=tasks_sequence_dedup,
+        tasks=tasks_sequence_dedup,
+        logging_dir=f"{LOGGING_DIR}/es/1/{CORPUS}",
+        depends=document_dedup_stage,
+    )
 
-# external_dedup_stage_3 = LocalPipelineExecutor(
-#     pipeline=[
-#         ESComputeRangesExternal(
-#             length_threshold=100,
-#             data_folder=es_dir_vi,
-#             num_threads=16,
-#         ),
-#     ],
-#     logging_dir=f"{LOGGING_DIR}/es/3/{CORPUS}",
-#     depends=sequence_dedup_stage_2,
-# )
+    sequence_dedup_stage_2 = LocalPipelineExecutor(
+        pipeline=[
+            ESMergeSequences(
+                data_folder=es_dir_vi,
+                tasks_stage_1=tasks_sequence_dedup,
+            ),
+        ],
+        logging_dir=f"{LOGGING_DIR}/es/2/{CORPUS}",
+        depends=sequence_dedup_stage_1,
+    )
+
+    external_dedup_stage_3 = LocalPipelineExecutor(
+        pipeline=[
+            ESComputeRangesExternal(
+                length_threshold=100,
+                data_folder=es_dir_vi,
+                num_threads=16,
+            ),
+        ],
+        logging_dir=f"{LOGGING_DIR}/es/3/{CORPUS}",
+        depends=sequence_dedup_stage_2,
+    )
+
+    _reshard_depends = external_dedup_stage_3
+else:
+    _reshard_depends = document_dedup_stage
 
 reshard_stage = LocalPipelineExecutor(
     pipeline=[
@@ -276,58 +296,64 @@ reshard_stage = LocalPipelineExecutor(
             num_shards=48,
         ),
     ],
-    depends=document_dedup_stage,
+    depends=_reshard_depends,
 )
 
-final_stage = LocalPipelineExecutor(
-    pipeline=[
-        JsonlReader(output_intermediate_3),
-        # ESRangeRemover(
-        #     min_doc_words=50,
-        #     sequence_folder=es_dir_vi,
-        #     tokenizer_name_or_path=VIETNAMESE_TOKENIZER,
-        #     language=Languages.vietnamese,
-        # ),
-
-        # NOTE: datatrove's PIIFormatter uses regex-based PII removal; scrubadub is
-        # more thorough but significantly slower — acceptable for this corpus size
-        PIIFormatter(),
-        ParquetWriter(final_output_dir),
-
-        # TODO: shard each of them into their original datasets (for finegrained mixture)
-        # TODO: compute stats in a separate stage
-
-        DocStats(
-            f"{STATS_DIR}/docs",
-            top_k_config=top_k_config,
-        ),
-        LineStats(
-            f"{STATS_DIR}/lines",
-            top_k_config=top_k_config,
-        ),
-        ParagraphStats(
-            f"{STATS_DIR}/paragraphs",
-            top_k_config=top_k_config,
-        ),
-        # NOTE: word length stats are approximate for Vietnamese (spaces within words);
-        # syllable-level stats would be more meaningful but require VnCoreNLP or similar
-        WordStats(
-            f"{STATS_DIR}/words",
-            stop_words=set(STOP_WORDS),
-            language=Languages.vietnamese,
-            top_k_config=top_k_config,
-        ),
-        SentenceStats(
-            f"{STATS_DIR}/sentences",
-            language=Languages.vietnamese,
-            top_k_config=top_k_config,
-        ),
-        TokenStats(
-            f"{STATS_DIR}/tokens",
+_final_pipeline_steps = [
+    JsonlReader(output_intermediate_3),
+]
+if ENABLE_EXACT_SUBSTRING_DEDUP:
+    _final_pipeline_steps.append(
+        ESRangeRemover(
+            min_doc_words=50,
+            sequence_folder=es_dir_vi,
             tokenizer_name_or_path=VIETNAMESE_TOKENIZER,
-            top_k_config=top_k_config,
+            language=Languages.vietnamese,
         ),
-    ],
+    )
+_final_pipeline_steps.extend([
+    # NOTE: datatrove's PIIFormatter uses regex-based PII removal; scrubadub is
+    # more thorough but significantly slower — acceptable for this corpus size
+    PIIFormatter(),
+    ParquetWriter(final_output_dir),
+
+    # TODO: shard each of them into their original datasets (for finegrained mixture)
+    # TODO: compute stats in a separate stage
+
+    DocStats(
+        f"{STATS_DIR}/docs",
+        top_k_config=top_k_config,
+    ),
+    LineStats(
+        f"{STATS_DIR}/lines",
+        top_k_config=top_k_config,
+    ),
+    ParagraphStats(
+        f"{STATS_DIR}/paragraphs",
+        top_k_config=top_k_config,
+    ),
+    # NOTE: word length stats are approximate for Vietnamese (spaces within words);
+    # syllable-level stats would be more meaningful but require VnCoreNLP or similar
+    WordStats(
+        f"{STATS_DIR}/words",
+        stop_words=set(STOP_WORDS),
+        language=Languages.vietnamese,
+        top_k_config=top_k_config,
+    ),
+    SentenceStats(
+        f"{STATS_DIR}/sentences",
+        language=Languages.vietnamese,
+        top_k_config=top_k_config,
+    ),
+    TokenStats(
+        f"{STATS_DIR}/tokens",
+        tokenizer_name_or_path=VIETNAMESE_TOKENIZER,
+        top_k_config=top_k_config,
+    ),
+])
+
+final_stage = LocalPipelineExecutor(
+    pipeline=_final_pipeline_steps,
     tasks=48,
     workers=16,
     logging_dir=f"{LOGGING_DIR}/final/{CORPUS}",
@@ -337,9 +363,10 @@ final_stage = LocalPipelineExecutor(
 def main():
     main_processing_executor.run()
     document_dedup_stage.run()
-    # sequence_dedup_stage_1.run()
-    # sequence_dedup_stage_2.run()
-    # external_dedup_stage_3.run()
+    if ENABLE_EXACT_SUBSTRING_DEDUP:
+        sequence_dedup_stage_1.run()
+        sequence_dedup_stage_2.run()
+        external_dedup_stage_3.run()
     reshard_stage.run()
     final_stage.run()
 

@@ -1,10 +1,16 @@
 import glob
 from pathlib import Path
+import struct
 import subprocess
 from subprocess import CalledProcessError
 import tempfile
 
+import numpy as np
 from datatrove.pipeline.base import PipelineStep, DocumentsPipeline
+from datatrove.pipeline.dedup.exact_substrings import (
+    ESRangeRemover,
+    SEPARATOR_BYTES,
+)
 from datatrove.pipeline.filters.base_filter import BaseFilter
 from datatrove.data import Document
 from datatrove.io import DataFolderLike, get_datafolder
@@ -12,6 +18,118 @@ from datatrove.utils.logging import logger
 from datatrove.utils.typeshelper import ExtensionHelperES as EH
 
 from rensa import RMinHash, RMinHashLSH
+
+
+# ---------------------------------------------------------------------------
+# Monkey-patch datatrove exact-substring dedup to use uint32 token encoding.
+#
+# Upstream datatrove (<=0.6) encodes token IDs as np.uint16 (max 65535).
+# VinaSmol's merged vocab is 55936 tokens — this technically fits but the
+# separator bytes 0xFFFF (=65535 in uint16) can collide with valid token IDs,
+# and any future vocab expansion would overflow.  Using uint32 avoids both
+# problems.
+#
+# The patch replaces `prepare_doc` and `read_bytes` and must be applied
+# before any ES pipeline stage runs.
+#
+# See: https://github.com/huggingface/datatrove/issues/121
+# ---------------------------------------------------------------------------
+
+_UINT32_PATCHED = False
+_ORIGINAL_PREPARE_DOC = None
+_ORIGINAL_READ_BYTES = None
+
+
+def _prepare_doc_uint32(tokenizer, doc: str, rank: int, doc_id: int) -> bytes:
+    """Encode a document's tokens as uint32 instead of uint16."""
+    tokens = tokenizer.encode(doc).ids
+    tokens = np.fromiter(tokens, dtype=np.uint32, count=len(tokens))
+    b_doc = (
+        b"\xff\xff\xff\xff"  # 4-byte separator (cannot collide with valid uint32 token)
+        + struct.pack("<I", doc_id)
+        + b"\xff\xff\xff\xff"
+        + struct.pack("<I", rank)
+        + tokens.tobytes()
+    )
+    return b_doc
+
+
+# Separator size changes: original = 12 bytes (2+4+2+4), patched = 16 bytes (4+4+4+4)
+SEPARATOR_BYTES_UINT32 = 16
+
+
+def _read_bytes_uint32(x: bytes) -> list[int]:
+    """Decode token bytes encoded with uint32."""
+    return np.frombuffer(x[SEPARATOR_BYTES_UINT32:], dtype=np.uint32).tolist()
+
+
+def apply_uint32_patch():
+    """Monkey-patch datatrove's ES dedup to use uint32 token encoding.
+
+    This patches the module-level functions ``prepare_doc`` and ``read_bytes``
+    in ``datatrove.pipeline.dedup.exact_substrings``.  It also patches
+    ``ESRangeRemover.remove_duplicate`` to decode with uint32.
+
+    Safe to call multiple times — subsequent calls are no-ops.
+    """
+    global _UINT32_PATCHED, _ORIGINAL_PREPARE_DOC, _ORIGINAL_READ_BYTES
+    if _UINT32_PATCHED:
+        return
+
+    import datatrove.pipeline.dedup.exact_substrings as es_mod
+
+    _ORIGINAL_PREPARE_DOC = es_mod.prepare_doc
+    _ORIGINAL_READ_BYTES = es_mod.read_bytes
+
+    es_mod.prepare_doc = _prepare_doc_uint32
+    es_mod.read_bytes = _read_bytes_uint32
+    es_mod.SEPARATOR_BYTES = SEPARATOR_BYTES_UINT32
+
+    # Patch ESRangeRemover.remove_duplicate to use uint32 for decoding
+    _original_remove_duplicate = ESRangeRemover.remove_duplicate
+
+    def _remove_duplicate_uint32(self, doc, bytes_content):
+        n_bytes = len(bytes_content)
+        duplicates_ranges = self.get_duplicate_range(n_bytes)
+        duplicates = []
+        for byte_a, byte_b in duplicates_ranges:
+            dup_sentence = self.tokenizer.decode(
+                np.frombuffer(bytes_content[byte_a:byte_b], dtype=np.uint32).tolist()
+            )
+            duplicates.append(dup_sentence)
+
+        if duplicates:
+            text = doc.text
+            for d in duplicates:
+                text = text.replace(d, "")
+            doc.text = text
+
+        self.bytes_counter += len(bytes_content)
+
+        if len(self.word_tokenizer.word_tokenize(doc.text)) < self.min_doc_words:
+            return False
+        return True
+
+    ESRangeRemover.remove_duplicate = _remove_duplicate_uint32
+
+    _UINT32_PATCHED = True
+    logger.info("Applied uint32 monkey-patch to datatrove exact-substring dedup")
+
+
+def revert_uint32_patch():
+    """Revert the uint32 monkey-patch (useful for testing)."""
+    global _UINT32_PATCHED, _ORIGINAL_PREPARE_DOC, _ORIGINAL_READ_BYTES
+    if not _UINT32_PATCHED:
+        return
+
+    import datatrove.pipeline.dedup.exact_substrings as es_mod
+
+    es_mod.prepare_doc = _ORIGINAL_PREPARE_DOC
+    es_mod.read_bytes = _ORIGINAL_READ_BYTES
+    es_mod.SEPARATOR_BYTES = SEPARATOR_BYTES  # Restore original 12
+
+    _UINT32_PATCHED = False
+
 
 # TODO: Possibly apply stronger rules for deduplication, such as:
 # - Linewise filtering: Read more, sign-in, items in cart... (see RefinedWeb G.2)
@@ -176,14 +294,16 @@ class RensaDeduplicate(BaseFilter):
         return True
 
 
-# FIXME: decoding issues https://github.com/huggingface/datatrove/issues/121
-# FIXME: datatrove encodes token ids with uint16, which is incompatible with
-# large vocabulary tokenizers
+# NOTE: uint16 encoding issue addressed by apply_uint32_patch() above.
+# See: https://github.com/huggingface/datatrove/issues/121
 class ESComputeRangesExternal(PipelineStep):
     """STAGE 2.5 of exact substring deduplication
 
     Runs the external scripts from https://github.com/google-research/deduplicate-text-datasets
     submodule. Requires Rust to be installed.
+
+    Before using this stage, call ``apply_uint32_patch()`` to fix datatrove's
+    uint16 token encoding limitation.
     """
 
     type = "🫂 - DEDUP"
@@ -195,8 +315,8 @@ class ESComputeRangesExternal(PipelineStep):
             data_folder: DataFolderLike = None,
             tmp_dir: Path = None,
             google_repo_path: Path = None,
-            #cargo_path: Path = None,
             num_threads: int = 8,
+            release_build: bool = True,
         ):
         super().__init__()
         self.data_folder = get_datafolder(data_folder)
@@ -207,18 +327,48 @@ class ESComputeRangesExternal(PipelineStep):
 
         self.length_threshold = length_threshold
         self.num_threads = num_threads
+        self.release_build = release_build
+
+    def _fix_cargo_lock_edition(self):
+        """Fix Cargo.lock resolver edition for older google-research repos.
+
+        The deduplicate-text-datasets repo uses an old Cargo edition that may
+        produce a lockfile incompatible with newer Rust toolchains.  If
+        Cargo.toml exists but lacks ``edition``, we add ``edition = "2021"``.
+        """
+        cargo_toml = self.google_repo_path / "Cargo.toml"
+        if not cargo_toml.exists():
+            return
+        content = cargo_toml.read_text()
+        if 'edition' not in content:
+            content = content.replace(
+                '[package]',
+                '[package]\nedition = "2021"',
+                1,
+            )
+            cargo_toml.write_text(content)
+            logger.info("Patched Cargo.toml to add edition = \"2021\"")
+        # Remove stale Cargo.lock so it gets regenerated
+        cargo_lock = self.google_repo_path / "Cargo.lock"
+        if cargo_lock.exists():
+            cargo_lock.unlink()
+            logger.info("Removed stale Cargo.lock for regeneration")
 
     def setup(self):
         self.tmp_dir = tempfile.TemporaryDirectory(
             prefix="deduplicate-text-datasets",
             dir=self._tmp_dir,
         )
+        self._fix_cargo_lock_edition()
+
+        cargo_cmd = ["cargo", "build"]
+        if self.release_build:
+            cargo_cmd.append("--release")
+
         try:
             with self.track_time(unit="cargo_build"):
                 cargo_build = subprocess.run(
-                    # TODO: Cargo.lock with old edition
-                    # TODO: patch the script to be able to run with --release
-                    ["cargo", "build"],
+                    cargo_cmd,
                     capture_output=True,
                     check=True,
                     cwd=self.google_repo_path,
@@ -231,7 +381,7 @@ class ESComputeRangesExternal(PipelineStep):
                 "or cargo build failed.\n{}",
                 e.stderr.decode()
             )
-            raise e
+            raise
 
         subprocess.run(
             ["ln", "-s", "-f", self.tmp_dir.name, "./tmp"],
@@ -279,11 +429,15 @@ class ESComputeRangesExternal(PipelineStep):
         #for file in _temp_big_sequences:
         #    Path(file).unlink(missing_ok=True)
         
+        cargo_run = ["cargo", "run"]
+        if self.release_build:
+            cargo_run.extend(["--release", "--"])
+
         try:
             with self.track_time(unit="self_similar"):
                 self_similar = subprocess.run(
                     [
-                        "cargo", "run", "self-similar",
+                        *cargo_run, "self-similar",
                         "--data-file", dataset_file,
                         "--length-threshold", str(self.length_threshold),
                         "--cache-dir", self.tmp_dir.name,
@@ -301,7 +455,7 @@ class ESComputeRangesExternal(PipelineStep):
                 with self.data_folder.open(byterange_file, "wb") as f:
                     subprocess.run(
                         [
-                            "cargo", "run", "collect",
+                            *cargo_run, "collect",
                             "--data-file", dataset_file,
                             "--length-threshold", str(self.length_threshold),
                             "--cache-dir", self.tmp_dir.name,
@@ -313,22 +467,21 @@ class ESComputeRangesExternal(PipelineStep):
                     logger.info("Done collecting self-similarity")
         except CalledProcessError as e:
             logger.critical("self-similar failed\n{}", e.stderr.decode())
-            raise e
+            raise
         
-        _temp_es_sequences = glob.glob(
-            f"*.{EH.stage_1_sequence}*",
-            root_dir=self.data_folder.path,
-        )
-        _temp_big_sequences = glob.glob(
-            f"dataset{EH.stage_2_big_sequence}.*",
-            root_dir=self.data_folder.path,
-        )
         self.data_folder.move(f"00000{EH.stage_1_sequence}", f"dataset{EH.stage_1_sequence}")
         self.data_folder.move(f"00000{EH.stage_1_sequence_size}", f"dataset{EH.stage_1_sequence_size}")
 
-        #for file in _temp_es_sequences + _temp_big_sequences:
-        #    Path(file).unlink(missing_ok=True)
+        # Clean up intermediate files produced by suffix array construction
+        for pattern in [
+            f"*.{EH.stage_1_sequence}*",
+            f"dataset{EH.stage_2_big_sequence}.*",
+        ]:
+            for file in glob.glob(pattern, root_dir=self.data_folder.path):
+                (Path(self.data_folder.path) / file).unlink(missing_ok=True)
 
-        #self.tmp_dir.cleanup()
-        (Path(self.google_repo_path) / "tmp").unlink()
+        tmp_symlink = Path(self.google_repo_path) / "tmp"
+        if tmp_symlink.is_symlink():
+            tmp_symlink.unlink()
+        self.tmp_dir.cleanup()
         logger.info("Done")
